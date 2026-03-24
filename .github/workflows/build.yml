@@ -1,0 +1,96 @@
+name: Build VanillaFixes
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        build_type: [Release, Debug]
+        compiler: [msvc]  # Only MSVC
+        include:
+          - compiler: msvc
+            cmake_generator: "Visual Studio 17 2022"
+            cmake_args: "-A Win32"
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Configure CMake (MSVC)
+      run: |
+        cmake -B build -G "${{ matrix.cmake_generator }}" ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_C_FLAGS="/DPROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION=0x00000004"
+
+    - name: Build
+      run: |
+        cmake --build build --config ${{ matrix.build_type }}
+
+    - name: Create artifact directory
+      run: |
+        mkdir -p artifacts/VanillaFixes-${{ matrix.compiler }}-${{ matrix.build_type }}
+        
+    - name: Copy artifacts
+      run: |
+        # Use file masks to copy all EXE and DLL files
+        cp bin/${{ matrix.build_type }}/*.exe artifacts/VanillaFixes-${{ matrix.compiler }}-${{ matrix.build_type }}/
+        cp bin/${{ matrix.build_type }}/*.dll artifacts/VanillaFixes-${{ matrix.compiler }}-${{ matrix.build_type }}/
+      shell: bash
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: VanillaFixes-${{ matrix.compiler }}-${{ matrix.build_type }}
+        path: artifacts/VanillaFixes-${{ matrix.compiler }}-${{ matrix.build_type }}
+
+    # Create a PR-specific artifact if this is a pull request
+    - name: Create PR artifact package
+      if: github.event_name == 'pull_request' && matrix.build_type == 'Release'
+      run: |
+        mkdir -p pr_artifacts
+        Copy-Item -Path bin\${{ matrix.build_type }}\*.exe -Destination pr_artifacts\
+        Copy-Item -Path bin\${{ matrix.build_type }}\*.dll -Destination pr_artifacts\
+        Compress-Archive -Path pr_artifacts\* -DestinationPath VanillaFixes-PR-${{ github.event.pull_request.number }}.zip
+      shell: pwsh
+
+    - name: Upload PR artifact
+      if: github.event_name == 'pull_request' && matrix.build_type == 'Release'
+      uses: actions/upload-artifact@v6
+      with:
+        name: VanillaFixes-PR-${{ github.event.pull_request.number }}
+        path: VanillaFixes-PR-${{ github.event.pull_request.number }}.zip
+
+  create-release:
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Create release package
+        run: |
+          mkdir -p release
+          cp -r artifacts/VanillaFixes-msvc-Release/* release/
+          cd release
+          zip -r ../VanillaFixes.zip .
+        shell: bash
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: VanillaFixes.zip
+          name: VanillaFixes ${{ github.sha }}
+          tag_name: build-${{ github.run_number }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
